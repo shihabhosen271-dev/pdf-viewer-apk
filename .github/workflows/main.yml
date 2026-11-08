@@ -1,0 +1,156 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: com.shihab.pdfviewer,  label: "PDF viewer",   path: "/PDF-viewer/" }
+          - { id: com.shihab.pdfviewer2, label: "PDF viewer 2", path: "/PDF-viewer-2/" }
+          - { id: com.shihab.pdfviewer3, label: "PDF viewer 3", path: "/PDF-viewer-3/" }
+    env:
+      APP_ID: ${{ matrix.id }}
+      APP_LABEL: ${{ matrix.label }}
+      APP_PATH: ${{ matrix.path }}
+      HOST: shihabhosen271-dev.github.io
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - uses: actions/cache@v4
+        with:
+          path: app.keystore
+          key: keystore-${{ matrix.id }}-v1
+
+      - name: Create signing key
+        run: |
+          [ -f app.keystore ] || keytool -genkeypair -keystore app.keystore -storepass android123 -keypass android123 -alias key0 -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=PDF viewer"
+          keytool -list -v -keystore app.keystore -storepass android123 | grep SHA256
+
+      - name: Write Android project
+        run: |
+          mkdir -p app/src/main/res/values app/src/main/res/mipmap-xxxhdpi
+          curl -fsSL "https://$HOST${APP_PATH}icons/icon-512.png" -o app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+            repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+            repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "twa"
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'com.shihab.twa'
+            compileSdk 34
+            defaultConfig {
+              applicationId System.getenv('APP_ID')
+              minSdk 21
+              targetSdk 34
+              versionCode 1
+              versionName '1.0'
+              manifestPlaceholders = [
+                appName: System.getenv('APP_LABEL'),
+                host: System.getenv('HOST'),
+                appPath: System.getenv('APP_PATH'),
+                startUrl: 'https://' + System.getenv('HOST') + System.getenv('APP_PATH')
+              ]
+            }
+            signingConfigs {
+              release {
+                storeFile rootProject.file('app.keystore')
+                storePassword 'android123'
+                keyAlias 'key0'
+                keyPassword 'android123'
+              }
+            }
+            buildTypes {
+              release {
+                signingConfig signingConfigs.release
+                minifyEnabled false
+              }
+            }
+          }
+          dependencies {
+            implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+            implementation 'androidx.appcompat:appcompat:1.6.1'
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET" />
+            <application
+              android:label="${appName}"
+              android:icon="@mipmap/ic_launcher"
+              android:allowBackup="false"
+              android:supportsRtl="true"
+              android:theme="@style/AppTheme">
+              <meta-data android:name="asset_statements" android:resource="@string/asset_statements" />
+              <activity
+                android:name="com.google.androidbrowserhelper.trusted.LauncherActivity"
+                android:exported="true"
+                android:label="${appName}"
+                android:launchMode="singleTask">
+                <meta-data android:name="android.support.customtabs.trusted.DEFAULT_URL" android:value="${startUrl}" />
+                <meta-data android:name="android.support.customtabs.trusted.STATUS_BAR_COLOR" android:resource="@color/green" />
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
+                <intent-filter android:autoVerify="true">
+                  <action android:name="android.intent.action.VIEW" />
+                  <category android:name="android.intent.category.DEFAULT" />
+                  <category android:name="android.intent.category.BROWSABLE" />
+                  <data android:scheme="https" android:host="${host}" android:pathPrefix="${appPath}" />
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+            <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar" />
+          </resources>
+          EOF
+          cat > app/src/main/res/values/colors.xml <<'EOF'
+          <resources>
+            <color name="green">#188038</color>
+          </resources>
+          EOF
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+            <string name="asset_statements">[{\"relation\": [\"delegate_permission/common.handle_all_urls\"], \"target\": {\"namespace\": \"web\", \"site\": \"https://shihabhosen271-dev.github.io\"}}]</string>
+          </resources>
+          EOF
+
+      - name: Build APK
+        run: gradle assembleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.id }}
+          path: app/build/outputs/apk/release/app-release.apk
